@@ -148,7 +148,8 @@ async function api(req, env, url) {
   if (p === "/api/me" && m === "GET") {
     if (!user) return json({ user: null });
     const L = limits(env);
-    return json({ user: { name: user.name, email: user.email, isAdmin: isAdmin(env, user) }, usage: { used: await usedBytes(env, user.id), quota: Number.isFinite(L.user) ? L.user : null }, maxFile: L.file, siteName: siteName(env) });
+    const tot = await env.DB.prepare(`SELECT COALESCE(SUM(size),0) AS s FROM images`).first();
+    return json({ user: { name: user.name, email: user.email, isAdmin: isAdmin(env, user) }, usage: { used: await usedBytes(env, user.id), quota: Number.isFinite(L.user) ? L.user : null, total: Number(tot.s), totalLimit: L.total }, maxFile: L.file, siteName: siteName(env) });
   }
   if (!user) return err(401, "로그인이 필요합니다.");
 

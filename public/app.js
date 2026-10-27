@@ -103,13 +103,13 @@ async function loadLibrary() {
   try { const [me, al] = await Promise.all([api("/api/me"), api("/api/albums")]); S.usage = me.usage; S.albums = al.albums; } catch (e) { fail(e); }
 }
 function renderLibrary() {
-  const used = S.usage?.used || 0, quota = S.usage?.quota || 1;
+  const used = S.usage?.used || 0, quota = S.usage?.quota || 0; // quota 0 = 1인 한도 없음
   app.innerHTML = header(`${logo()}<div class="spacer"></div>
       ${S.me.isAdmin ? `<button class="btn" id="adminBtn">신고 관리</button>` : ""}
       <button class="iconbtn" id="logout" aria-label="로그아웃" title="로그아웃">⎋</button>`) +
   `<main class="wrap stack">
-    <div class="usage"><div class="row" style="justify-content:space-between"><h2>${esc(S.me.name)}님의 보관함</h2><span class="mono muted" style="font-size:12px">${fmt(used)} / ${fmt(quota)}</span></div>
-      <div class="bar"><span style="width:${Math.min(100, used / quota * 100).toFixed(2)}%"></span></div></div>
+    <div class="usage"><div class="row" style="justify-content:space-between"><h2>${esc(S.me.name)}님의 보관함</h2><span class="mono muted" style="font-size:12px">${quota ? `${fmt(used)} / ${fmt(quota)}` : `${fmt(used)} 사용 중`}</span></div>
+      ${quota ? `<div class="bar"><span style="width:${Math.min(100, used / quota * 100).toFixed(2)}%"></span></div>` : ""}</div>
     <div class="stack" style="gap:6px"><form class="newalbum" id="newForm"><input id="newTitle" placeholder="새 앨범 제목 (예: AA)" maxlength="60" autocomplete="off" aria-describedby="titleHint"><button class="btn primary" type="submit">앨범 만들기</button></form>
     <span class="hint" id="titleHint">제목은 사이트 전체에서 하나만 쓸 수 있습니다. 링크는 <span class="mono">${esc(location.host)}/제목_1.webp</span> 형식이 됩니다.</span></div>
     ${S.albums.length ? `<div class="albums">${S.albums.map(a => `

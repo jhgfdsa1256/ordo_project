@@ -2,7 +2,7 @@
 // 필요한 연결(wrangler.jsonc): DB (D1 데이터베이스)
 // 사진 저장소: BUCKET (R2 버킷) 또는 S3_* 환경 변수 5개 (src/storage.js 참고)
 // 필요한 환경 변수: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
-// 선택 환경 변수: ADMIN_EMAILS, USER_QUOTA_MB, TOTAL_QUOTA_GB, MAX_FILE_MB, CACHE_SECONDS, SITE_NAME
+// 선택 환경 변수: ADMIN_EMAILS, USER_QUOTA_MB(없으면 1인 한도 없음), TOTAL_QUOTA_GB, MAX_FILE_MB, CACHE_SECONDS, SITE_NAME
 
 import { getStore } from "./storage.js";
 
@@ -49,7 +49,8 @@ const now = () => Date.now();
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : d; };
 const limits = env => ({
-  user: num(env.USER_QUOTA_MB, 500) * 1048576,
+  // USER_QUOTA_MB 를 넣지 않으면 1인 한도 없음 (전체 한도 TOTAL_QUOTA_GB 만 적용)
+  user: parseFloat(env.USER_QUOTA_MB) > 0 ? parseFloat(env.USER_QUOTA_MB) * 1048576 : Infinity,
   total: num(env.TOTAL_QUOTA_GB, 9.5) * 1073741824,
   file: num(env.MAX_FILE_MB, 20) * 1048576,
   cache: Math.round(num(env.CACHE_SECONDS, 60)),
@@ -147,7 +148,7 @@ async function api(req, env, url) {
   if (p === "/api/me" && m === "GET") {
     if (!user) return json({ user: null });
     const L = limits(env);
-    return json({ user: { name: user.name, email: user.email, isAdmin: isAdmin(env, user) }, usage: { used: await usedBytes(env, user.id), quota: L.user }, maxFile: L.file, siteName: siteName(env) });
+    return json({ user: { name: user.name, email: user.email, isAdmin: isAdmin(env, user) }, usage: { used: await usedBytes(env, user.id), quota: Number.isFinite(L.user) ? L.user : null }, maxFile: L.file, siteName: siteName(env) });
   }
   if (!user) return err(401, "로그인이 필요합니다.");
 

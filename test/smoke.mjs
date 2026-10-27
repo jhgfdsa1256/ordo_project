@@ -113,6 +113,15 @@ await call("DELETE", `/api/albums/${al.id}`);
 await call("DELETE", `/api/albums/${other.id}`);
 assert.equal((await call("POST", "/api/albums", { title: "BB" })).status, 201);
 assert.equal(store.size, 0);
+// USER_QUOTA_MB 를 안 넣으면 1인 한도 없음 (quota: null), 0.0001MB 로 정하면 한도 적용
+{
+  const noLimit = await handle(new Request(O + "/api/me", { headers: { cookie: jar } }), { ...env, USER_QUOTA_MB: undefined });
+  assert.equal((await noLimit.json()).usage.quota, null);
+  const fd = new FormData(); fd.append("file", new File([new Uint8Array(1100000)], "big.webp", { type: "image/webp" }));
+  const a2 = (await j(await call("POST", "/api/albums", { title: "큰사진" }))).body.album;
+  const r = await handle(new Request(O + `/api/albums/${a2.id}/images`, { method: "POST", headers: { cookie: jar, origin: O }, body: fd }), { ...env, USER_QUOTA_MB: undefined });
+  assert.equal(r.status, 201, "한도 없음이면 1MB 넘는 사진도 올라감");
+}
 // 로그아웃
 await call("POST", "/api/auth/logout"); jar = "";
 assert.equal((await j(await call("GET", "/api/me"))).body.user, null);

@@ -1,0 +1,21 @@
+// Ordo 배포 설정 (Cloudflare Worker + 정적 파일)
+// 고쳐야 하는 곳은 아래 두 군데입니다.
+//   1) "name"        : Cloudflare에서 만든 Worker 이름과 똑같이
+//   2) "database_id" : D1 데이터베이스 ordo-db 의 ID (D1 화면에서 복사)
+{
+  "name": "ordo-host",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-09-01",
+  "keep_vars": true,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // 화면 파일(/, index.html, app.js, style.css)은 서버 코드를 거치지 않고 바로 제공합니다.
+    "run_worker_first": ["/*", "!/", "!/index.html", "!/app.js", "!/style.css"]
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "ordo-db", "database_id": "여기에-D1-ID를-붙여넣기" }
+  ]
+  // R2를 쓰는 경우에만 아래 줄의 앞 // 를 지우고, 위 "]" 뒤에 쉼표(,)를 붙이세요.
+  // "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "ordo-images" }]
+}

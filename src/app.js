@@ -1,7 +1,10 @@
-// Ordo 서버 (Cloudflare Pages Functions)
-// 필요한 바인딩: DB (D1 데이터베이스), BUCKET (R2 버킷)
+// Ordo 서버 (Cloudflare Worker)
+// 필요한 연결(wrangler.jsonc): DB (D1 데이터베이스)
+// 사진 저장소: BUCKET (R2 버킷) 또는 S3_* 환경 변수 5개 (src/storage.js 참고)
 // 필요한 환경 변수: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 // 선택 환경 변수: ADMIN_EMAILS, USER_QUOTA_MB, TOTAL_QUOTA_GB, MAX_FILE_MB, CACHE_SECONDS, SITE_NAME
+
+import { getStore } from "./storage.js";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, google_sub TEXT UNIQUE, email TEXT, name TEXT, created INTEGER, banned INTEGER DEFAULT 0)`,
@@ -110,7 +113,9 @@ export async function handle(req, env) {
   const p = url.pathname;
   const isImg = IMG_RE.test(p);
   if (!p.startsWith("/api/") && !p.startsWith("/f/") && !p.startsWith("/a/") && !isImg) return null;
-  if (!env.DB || !env.BUCKET) return err(500, "서버 설정이 끝나지 않았습니다. DB(D1)와 BUCKET(R2) 연결을 확인하세요.");
+  const store = getStore(env);
+  if (!env.DB || !store) return err(500, "서버 설정이 끝나지 않았습니다. DB(D1)와 사진 저장소(R2 BUCKET 또는 S3 설정)를 확인하세요.");
+  env = { ...env, STORE: store };
   await ensureSchema(env);
   try {
     if (isImg) return await serveByName(req, env, p);
@@ -193,7 +198,7 @@ async function api(req, env, url) {
     }
     if (m === "DELETE") {
       const imgs = await albumImages(env, album.id);
-      for (let i = 0; i < imgs.length; i += 900) await env.BUCKET.delete(imgs.slice(i, i + 900).map(x => "img/" + x.id));
+      for (let i = 0; i < imgs.length; i += 900) await env.STORE.delete(imgs.slice(i, i + 900).map(x => "img/" + x.id));
       await env.DB.batch([
         env.DB.prepare(`DELETE FROM images WHERE album_id = ?`).bind(album.id),
         env.DB.prepare(`DELETE FROM albums WHERE id = ?`).bind(album.id),
@@ -218,7 +223,7 @@ async function api(req, env, url) {
   if ((mm = p.match(/^\/api\/images\/([a-z0-9]+)$/)) && m === "DELETE") {
     const img = await env.DB.prepare(`SELECT id, album_id FROM images WHERE id = ? AND user_id = ?`).bind(mm[1], user.id).first();
     if (!img) return err(404, "사진을 찾을 수 없습니다.");
-    await env.BUCKET.delete("img/" + img.id);
+    await env.STORE.delete("img/" + img.id);
     await env.DB.batch([
       env.DB.prepare(`DELETE FROM images WHERE id = ?`).bind(img.id),
       env.DB.prepare(`UPDATE albums SET updated = ? WHERE id = ?`).bind(now(), img.album_id),
@@ -312,7 +317,7 @@ async function upload(req, env, user, albumId) {
   if (Number(tot.s) + file.size > L.total) return err(507, "서비스 전체 저장 공간이 가득 찼습니다. 관리자에게 알려주세요.");
 
   const id = rid(16);
-  await env.BUCKET.put("img/" + id, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+  await env.STORE.put("img/" + id, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
   const max = await env.DB.prepare(`SELECT COALESCE(MAX(pos),0) AS m FROM images WHERE album_id = ?`).bind(album.id).first();
   const w = parseInt(form.get("w"), 10) || 0, h = parseInt(form.get("h"), 10) || 0;
   const origName = String(form.get("origName") || file.name || "").slice(0, 200);
@@ -347,7 +352,7 @@ async function serveByName(req, env, path) {
   const n = parseInt(m[2], 10); if (n < 1) return notFound();
   const img = await env.DB.prepare(`SELECT id, ext, mime FROM images WHERE album_id = ? ORDER BY pos, created LIMIT 1 OFFSET ?`).bind(album.id, n - 1).first();
   if (!img || img.ext !== m[3].toLowerCase()) return notFound();
-  const obj = await env.BUCKET.get("img/" + img.id); if (!obj) return notFound();
+  const obj = await env.STORE.get("img/" + img.id); if (!obj) return notFound();
   // 순서를 바꾸면 같은 주소가 다른 사진을 가리키므로 캐시는 짧게 둡니다.
   return sendObject(req, obj, img.mime, `public, max-age=${limits(env).cache}`, `${safeTitle(album.title)}_${n}.${img.ext}`);
 }
@@ -355,7 +360,7 @@ async function serveById(req, env, path) {
   const m = path.match(/^\/f\/([a-z0-9]+)$/); if (!m) return notFound();
   const img = await env.DB.prepare(`SELECT i.id, i.mime, a.hidden FROM images i JOIN albums a ON a.id = i.album_id WHERE i.id = ?`).bind(m[1]).first();
   if (!img || img.hidden) return notFound();
-  const obj = await env.BUCKET.get("img/" + img.id); if (!obj) return notFound();
+  const obj = await env.STORE.get("img/" + img.id); if (!obj) return notFound();
   return sendObject(req, obj, img.mime, "public, max-age=31536000, immutable");
 }
 

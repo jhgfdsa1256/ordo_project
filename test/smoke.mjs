@@ -18,7 +18,19 @@ const BUCKET = {
   async get(k) { const v = store.get(k); return v ? { body: v.buf, httpEtag: `"${k}-${v.buf.length}"`, httpMetadata: { contentType: v.type } } : null; },
   async delete(k) { for (const x of [].concat(k)) store.delete(x); },
 };
-const env = { DB, BUCKET, DEV_LOGIN: "1", GOOGLE_CLIENT_ID: "cid", GOOGLE_CLIENT_SECRET: "sec", ADMIN_EMAILS: "dev@localhost", USER_QUOTA_MB: "1" };
+// USE_S3=1 이면 R2 대신 S3 호환 저장소(가짜 서버)로 같은 점검을 돌립니다.
+const useS3 = process.env.USE_S3 === "1";
+if (useS3) {
+  globalThis.fetch = async (url, init) => {
+    const key = new URL(url).pathname.replace(/^\/s3\/ordo\//, "");
+    if (init.method === "PUT") { store.set(key, { buf: new Uint8Array(init.body), type: init.headers["content-type"] }); return new Response(null, { status: 200 }); }
+    if (init.method === "GET") { const v = store.get(key); return v ? new Response(v.buf, { headers: { etag: `"${key}-${v.buf.length}"`, "content-type": v.type } }) : new Response("", { status: 404 }); }
+    if (init.method === "DELETE") { store.delete(key); return new Response(null, { status: 204 }); }
+    return new Response("", { status: 400 });
+  };
+}
+const s3env = { S3_ENDPOINT: "https://x.example/s3", S3_REGION: "r", S3_BUCKET: "ordo", S3_ACCESS_KEY_ID: "k", S3_SECRET_ACCESS_KEY: "s" };
+const env = { DB, ...(useS3 ? s3env : { BUCKET }), DEV_LOGIN: "1", GOOGLE_CLIENT_ID: "cid", GOOGLE_CLIENT_SECRET: "sec", ADMIN_EMAILS: "dev@localhost", USER_QUOTA_MB: "1" };
 const O = "http://localhost:8788";
 let jar = "";
 async function call(method, path, body, extra = {}) {

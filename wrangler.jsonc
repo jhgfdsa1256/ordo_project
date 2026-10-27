@@ -1,4 +1,4 @@
-// Ordo 배포 설정 (Cloudflare Worker + 정적 파일)
+// Ordo 배포 설정 (Cloudflare Worker + 정적 파일)@@
 // 고쳐야 하는 곳은 아래 두 군데입니다.
 //   1) "name"        : Cloudflare에서 만든 Worker 이름과 똑같이
 //   2) "database_id" : D1 데이터베이스 ordo-db 의 ID (D1 화면에서 복사)

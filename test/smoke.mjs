@@ -54,6 +54,7 @@ assert.equal((await call("POST", "/api/albums", { title: "x" }, { origin: "https
 // 시험 로그인
 assert.equal((await call("POST", "/api/auth/dev-login")).status, 200);
 const me = await j(await call("GET", "/api/me")); assert.equal(me.body.user.isAdmin, true);
+assert.equal(me.body.usage.total, 0); assert.ok(me.body.usage.totalLimit > 0);
 // 앨범 + 업로드 3장
 const al = (await j(await call("POST", "/api/albums", { title: "AA 테스트" }))).body.album;
 const ids = [];

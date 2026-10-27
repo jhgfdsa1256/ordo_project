@@ -149,3 +149,8 @@ textarea{font:inherit;color:inherit;border:1px solid var(--line);border-radius:1
 .adminlist{display:grid;gap:10px}
 .adminitem{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;display:grid;gap:6px;min-width:0}
 .adminitem .row .btn{height:38px;font-size:14px}
+
+.albumwrap{position:relative}
+.albumwrap .album{width:100%}
+.albumdel{position:absolute;top:6px;right:6px;min-height:32px;padding:0 10px;border:0;border-radius:8px;background:var(--badge-bg);color:var(--badge-fg);font-size:12px}
+.albumdel.armed{background:#c0392b;color:#fff}

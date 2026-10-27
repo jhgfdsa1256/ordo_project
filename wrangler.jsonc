@@ -3,7 +3,7 @@
 //   1) "name"        : Cloudflare에서 만든 Worker 이름과 똑같이
 //   2) "database_id" : D1 데이터베이스 ordo-db 의 ID (D1 화면에서 복사)
 {
-  "name": "ordo-host",
+  "name": "ordo_project",
   "main": "src/worker.js",
   "compatibility_date": "2025-09-01",
   "keep_vars": true,
@@ -14,8 +14,8 @@
     "run_worker_first": ["/*", "!/", "!/index.html", "!/app.js", "!/style.css"]
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "ordo-db", "database_id": "여기에-D1-ID를-붙여넣기" }
-  ]
+    { "binding": "DB", "database_name": "ordo_project", "database_id": "5c0eadb8-731d-49fe-802e-0e397ecc077f" }
+  ],
   // R2를 쓰는 경우에만 아래 줄의 앞 // 를 지우고, 위 "]" 뒤에 쉼표(,)를 붙이세요.
-  // "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "ordo-images" }]
+   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "ordo-images" }]
 }

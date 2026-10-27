@@ -103,20 +103,20 @@ async function loadLibrary() {
   try { const [me, al] = await Promise.all([api("/api/me"), api("/api/albums")]); S.usage = me.usage; S.albums = al.albums; } catch (e) { fail(e); }
 }
 function renderLibrary() {
-  const used = S.usage?.used || 0, quota = S.usage?.quota || 0; // quota 0 = 1인 한도 없음
+  const tot = S.usage?.total || 0, totLimit = S.usage?.totalLimit || 0; // 서버 전체 사용량
   app.innerHTML = header(`${logo()}<div class="spacer"></div>
       ${S.me.isAdmin ? `<button class="btn" id="adminBtn">신고 관리</button>` : ""}
-      <button class="iconbtn" id="logout" aria-label="로그아웃" title="로그아웃">⎋</button>`) +
+      <button class="btn" id="logout">로그아웃</button>`) +
   `<main class="wrap stack">
-    <div class="usage"><div class="row" style="justify-content:space-between"><h2>${esc(S.me.name)}님의 보관함</h2><span class="mono muted" style="font-size:12px">${quota ? `${fmt(used)} / ${fmt(quota)}` : `${fmt(used)} 사용 중`}</span></div>
-      ${quota ? `<div class="bar"><span style="width:${Math.min(100, used / quota * 100).toFixed(2)}%"></span></div>` : ""}</div>
+    <div class="usage"><div class="row" style="justify-content:space-between"><h2>${esc(S.me.name)}님의 보관함</h2><span class="mono muted" style="font-size:12px">서버 전체 ${totLimit ? `${fmt(tot)} / ${fmt(totLimit)}` : `${fmt(tot)} 사용 중`}</span></div>
+      ${totLimit ? `<div class="bar"><span style="width:${Math.min(100, tot / totLimit * 100).toFixed(2)}%"></span></div>` : ""}</div>
     <div class="stack" style="gap:6px"><form class="newalbum" id="newForm"><input id="newTitle" placeholder="새 앨범 제목 (예: AA)" maxlength="60" autocomplete="off" aria-describedby="titleHint"><button class="btn primary" type="submit">앨범 만들기</button></form>
     <span class="hint" id="titleHint">제목은 사이트 전체에서 하나만 쓸 수 있습니다. 링크는 <span class="mono">${esc(location.host)}/제목_1.webp</span> 형식이 됩니다.</span></div>
     ${S.albums.length ? `<div class="albums">${S.albums.map(a => `
-      <button class="album" data-id="${a.id}">
+      <div class="albumwrap"><button class="album" data-id="${a.id}">
         <div class="cover">${(a.covers.length >= 4 ? a.covers : a.covers.slice(0, 1)).map(id => `<img alt="" src="/f/${id}" loading="lazy">`).join("")}</div>
         <div class="meta"><b>${esc(a.title)}</b><span class="muted">${a.count}장 · ${fmt(a.size)}${a.hidden ? " · 숨김 처리됨" : ""}</span></div>
-      </button>`).join("")}</div>` : `<div class="empty">아직 앨범이 없습니다. 위에서 제목을 정하고 첫 앨범을 만드세요.</div>`}
+      </button><button class="albumdel" data-del="${a.id}" aria-label="${esc(a.title)} 앨범 삭제">삭제</button></div>`).join("")}</div>` : `<div class="empty">아직 앨범이 없습니다. 위에서 제목을 정하고 첫 앨범을 만드세요.</div>`}
   </main>`;
   $("#logout").onclick = async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => {}); S.me = null; render(); };
   const ab = $("#adminBtn"); if (ab) ab.onclick = () => openAdmin();
@@ -125,6 +125,11 @@ function renderLibrary() {
     try { const r = await api("/api/albums", { method: "POST", json: { title: t } }); await openAlbum(r.album.id); } catch (er) { fail(er); }
   };
   app.querySelectorAll(".album").forEach(b => b.onclick = () => openAlbum(b.dataset.id));
+  app.querySelectorAll(".albumdel").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "한 번 더"; setTimeout(() => { b.classList.remove("armed"); b.textContent = "삭제"; }, 3000); return; }
+    try { await api("/api/albums/" + b.dataset.del, { method: "DELETE" }); toast("앨범을 삭제했습니다"); await loadLibrary(); renderLibrary(); } catch (er) { fail(er); }
+  });
   watchTitle($("#newTitle"), $("#titleHint"));
 }
 // 제목을 입력하는 동안 쓸 수 있는지 미리 알려줍니다.
@@ -161,6 +166,7 @@ function renderAlbum() {
   `<main class="wrap stack">
     <div class="row" style="justify-content:space-between"><span class="mono muted" style="font-size:12px">앨범 ID ${a.id} · ${n}장${a.hidden ? " · 관리자가 숨김 처리함" : ""}</span>${S.busy ? `<span class="progress">${esc(S.busy)}</span>` : ""}</div>
     <div class="linkbox"><code>${esc(location.origin + "/a/" + a.id)}</code><button class="btn" id="copyShare">공유 링크</button></div>
+    <p class="hint" style="margin:0">앨범 ID는 공유 페이지 주소에만 쓰입니다. 사진 링크(<span class="mono">${esc(location.host)}/제목_번호.webp</span>)와는 관계없습니다.</p>
     <div class="toolbar">
       <span class="lbl">열</span>
       <div class="seg" role="group" aria-label="열 개수">${[1, 2, 3, 4, 5].map(k => `<button data-cols="${k}" aria-pressed="${S.cols === k}">${k}</button>`).join("")}</div>

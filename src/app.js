@@ -23,6 +23,7 @@ const SCHEMA = [
 const ALLOWED = { "image/webp": "webp", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif" };
 const REASONS = ["불법 촬영물·성적 착취물", "저작권 침해", "개인정보 노출", "기타"];
 const SESSION_DAYS = 30;
+const QUALITY_LABEL = { high: "고화질 · 화질 확정", lossless: "무손실 · 화질 확정", orig: "원본 · 화질 확정" };
 
 let schemaReady = false;
 async function ensureSchema(env) {
@@ -32,6 +33,9 @@ async function ensureSchema(env) {
   const cols = await env.DB.prepare(`PRAGMA table_info(albums)`).all();
   if (!(cols.results || []).some(c => c.name === "folder_id")) await env.DB.prepare(`ALTER TABLE albums ADD COLUMN folder_id TEXT`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS albums_folder ON albums(folder_id)`).run();
+  // 화질 확정 표시 기능 전에 올린 사진을 위한 보강: images 에 quality 칸이 없으면 추가 (옛 사진은 비어 있음)
+  const icols = await env.DB.prepare(`PRAGMA table_info(images)`).all();
+  if (!(icols.results || []).some(c => c.name === "quality")) await env.DB.prepare(`ALTER TABLE images ADD COLUMN quality TEXT`).run();
   schemaReady = true;
 }
 
@@ -114,7 +118,7 @@ async function ownFolder(env, user, id) {
 }
 const folderName = v => String(v || "").trim().replace(/\s+/g, " ").slice(0, 40);
 async function albumImages(env, albumId) {
-  const r = await env.DB.prepare(`SELECT id, ext, size, w, h, orig_name, orig_size FROM images WHERE album_id = ? ORDER BY pos, created`).bind(albumId).all();
+  const r = await env.DB.prepare(`SELECT id, ext, size, w, h, orig_name, orig_size, quality FROM images WHERE album_id = ? ORDER BY pos, created`).bind(albumId).all();
   return r.results || [];
 }
 const publicLink = (origin, album, i, img) => `${origin}/${encodeURIComponent(safeTitle(album.title))}_${i + 1}.${img.ext}`;
@@ -386,12 +390,14 @@ async function upload(req, env, user, albumId) {
   const w = parseInt(form.get("w"), 10) || 0, h = parseInt(form.get("h"), 10) || 0;
   const origName = String(form.get("origName") || file.name || "").slice(0, 200);
   const origSize = parseInt(form.get("origSize"), 10) || file.size;
+  // 올릴 때 고른 화질. 한 번 정해지면 바뀌지 않는다(사진을 다시 압축하는 기능이 없음). high=고화질, lossless=무손실, orig=원본 그대로
+  const q = String(form.get("quality") || ""), quality = ["high", "lossless", "orig"].includes(q) ? q : null;
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO images (id, album_id, user_id, pos, ext, mime, size, w, h, orig_name, orig_size, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, album.id, user.id, Number(max.m) + 1, ext, file.type, file.size, w, h, origName, origSize, now()),
+    env.DB.prepare(`INSERT INTO images (id, album_id, user_id, pos, ext, mime, size, w, h, orig_name, orig_size, created, quality) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, album.id, user.id, Number(max.m) + 1, ext, file.type, file.size, w, h, origName, origSize, now(), quality),
     env.DB.prepare(`UPDATE albums SET updated = ? WHERE id = ?`).bind(now(), album.id),
   ]);
-  return json({ image: { id, ext, size: file.size, w, h, orig_name: origName, orig_size: origSize } }, 201);
+  return json({ image: { id, ext, size: file.size, w, h, orig_name: origName, orig_size: origSize, quality } }, 201);
 }
 
 /* ---------- public files ---------- */
@@ -458,11 +464,11 @@ async function sharePage(req, env, path) {
 <meta property="og:title" content="${title}"><meta property="og:description" content="사진 ${imgs.length}장">${links[0] ? `<meta property="og:image" content="${esc(links[0])}">` : ""}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/style.css"></head><body>
-<header class="top"><div class="wrap"><a class="logo" href="/"><i><b></b><b></b><b></b><b></b></i>${site}</a><b class="headtitle">${title}</b><button class="btn" id="copyAll">링크 전체 복사</button></div></header>
+<header class="top"><div class="wrap"><a class="logo" href="/"><i><b></b><b></b><b></b><b></b></i><span class="lt">${site}</span></a><b class="headtitle">${title}</b><button class="btn" id="shareNative" hidden>공유</button><button class="btn" id="copyAll">링크 전체 복사</button></div></header>
 <main class="wrap stack" style="max-width:640px">
 <p class="muted mono" style="margin:0;font-size:12px">사진 ${imgs.length}장</p>
 <div class="sharelist">${imgs.map((img, i) => `<div class="shareitem">
-  <img src="/f/${img.id}" alt="${i + 1}번 사진" loading="${i < 2 ? "eager" : "lazy"}"${img.w && img.h ? ` width="${img.w}" height="${img.h}"` : ""}>
+  <div class="pic"><img src="/f/${img.id}" alt="${i + 1}번 사진" loading="${i < 2 ? "eager" : "lazy"}"${img.w && img.h ? ` width="${img.w}" height="${img.h}"` : ""}>${QUALITY_LABEL[img.quality] ? `<span class="qbadge">${QUALITY_LABEL[img.quality]}</span>` : ""}</div>
   <div class="linkbox"><code>${esc(links[i])}</code><button class="btn" data-copy="${i}">복사</button></div></div>`).join("") || `<div class="empty">아직 사진이 없습니다.</div>`}</div>
 <div class="report"><button class="btn danger" id="repToggle" style="justify-self:start">이 앨범 신고</button>
 <form id="repForm" class="stack" style="gap:6px" hidden>
@@ -474,6 +480,8 @@ ${REASONS.map((r, i) => `<label><input type="radio" name="reason" value="${esc(r
 const LINKS=${JSON.stringify(links).replace(/</g, "\\u003c")};const AID=${JSON.stringify(album.id)};
 const toast=m=>{const t=document.getElementById("toast");t.textContent=m;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,2200)};
 async function copy(s,m){try{await navigator.clipboard.writeText(s);toast(m)}catch{toast("복사가 막혔습니다. 링크를 길게 눌러 복사하세요")}}
+const sn=document.getElementById("shareNative");
+if(navigator.share){sn.hidden=false;sn.onclick=async()=>{try{await navigator.share({title:document.title,url:location.href})}catch{}}}
 document.getElementById("copyAll").onclick=()=>copy(LINKS.join("\\n"),"링크 "+LINKS.length+"개를 복사했습니다");
 document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(LINKS[+b.dataset.copy],"링크를 복사했습니다"));
 const f=document.getElementById("repForm");document.getElementById("repToggle").onclick=()=>f.hidden=!f.hidden;

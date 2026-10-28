@@ -51,26 +51,30 @@ async function decode(file) {
 async function toWebp(file, quality) {
   const lossless = quality === "lossless";
   const base = { origName: file.name, origSize: file.size };
-  if (file.type === "image/webp") { const bm = await decode(file); return { blob: file, w: bm.width, h: bm.height, ...base }; }
+  if (file.type === "image/webp") { const bm = await decode(file); return { blob: file, w: bm.width, h: bm.height, q: "orig", ...base }; }
   const bm = await decode(file);
   const w = bm.width || bm.naturalWidth, h = bm.height || bm.naturalHeight;
   const c = document.createElement("canvas"); c.width = w; c.height = h;
   const g = c.getContext("2d"); g.drawImage(bm, 0, 0);
   if (await canvasCanEncodeWebp()) {
     const blob = await new Promise(r => c.toBlob(r, "image/webp", lossless ? 1 : .9));
-    if (blob && blob.type === "image/webp") return { blob, w, h, ...base };
+    if (blob && blob.type === "image/webp") return { blob, w, h, q: quality, ...base };
   }
   try {
     const enc = await wasmEncoder();
     const buf = await enc(g.getImageData(0, 0, w, h), lossless ? { lossless: 1, quality: 100 } : { quality: 90 });
-    return { blob: new Blob([buf], { type: "image/webp" }), w, h, ...base };
+    return { blob: new Blob([buf], { type: "image/webp" }), w, h, q: quality, ...base };
   } catch (e) {
     console.warn("WebP 변환 실패, 원본 형식으로 올립니다", e);
-    return { blob: file, w, h, ...base, fallback: true };
+    return { blob: file, w, h, q: "orig", ...base, fallback: true };
   }
 }
 
 /* ---------- 공통 조각 ---------- */
+// 올릴 때 정해진 화질 (사진마다 확정, 이후 바뀌지 않음). 옛 사진은 값이 없어 표시하지 않음
+const QN = { high: "고화질", lossless: "무손실", orig: "원본" };
+const qBadge = (q, long) => QN[q] ? `<span class="qbadge">${QN[q]}${long ? " · 화질 확정" : " 확정"}</span>` : "";
+const canShare = !!navigator.share;
 const logo = () => `<a class="logo" href="/"><i><b></b><b></b><b></b><b></b></i>${esc(S.site)}</a>`;
 const header = inner => `<header class="top"><div class="wrap">${inner}</div></header>`;
 const fileName = i => `${safeTitle(S.album.title)}_${i + 1}.${S.images[i].ext}`;
@@ -205,7 +209,7 @@ function renderAlbum() {
       <a class="iconbtn" href="/a/${a.id}" target="_blank" rel="noopener" aria-label="공유 페이지 열기" title="공유 페이지" style="text-decoration:none">⤴</a>`) +
   `<main class="wrap stack">
     <div class="row" style="justify-content:space-between"><span class="mono muted" style="font-size:12px">앨범 ID ${a.id} · ${n}장${a.hidden ? " · 관리자가 숨김 처리함" : ""}</span>${S.busy ? `<span class="progress">${esc(S.busy)}</span>` : ""}</div>
-    <div class="linkbox"><code>${esc(location.origin + "/a/" + a.id)}</code><button class="btn" id="copyShare">공유 링크</button></div>
+    <div class="linkbox"><code>${esc(location.origin + "/a/" + a.id)}</code><button class="btn" id="copyShare">공유 링크</button>${canShare ? `<button class="btn" id="nativeShare">공유</button>` : ""}</div>
     <p class="hint" style="margin:0">앨범 ID는 공유 페이지 주소에만 쓰입니다. 사진 링크(<span class="mono">${esc(location.host)}/제목_번호.webp</span>)와는 관계없습니다.</p>
     <div class="toolbar">
       <span class="lbl">열</span>
@@ -215,10 +219,11 @@ function renderAlbum() {
       <span class="lbl" style="margin-left:6px">폴더</span>
       <select class="sel" id="folderSel" aria-label="앨범을 넣을 폴더"><option value="">폴더 없음</option>${S.folders.map(f => `<option value="${f.id}"${a.folderId === f.id ? " selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
     </div>
+    <p class="hint" style="margin:0">고른 화질은 올리는 사진에만 적용됩니다. 올린 사진은 화질이 확정되어(사진 우측 하단 표시) 바뀌지 않습니다.</p>
     ${n ? `<p class="hint" style="margin:0">사진을 누르고, 옮기고 싶은 자리의 사진을 누르면 그 자리로 이동합니다. ⋯ 버튼은 링크 복사·저장·삭제.</p>
       <div class="grid" id="grid" data-cols="${S.cols}" style="--cols:${S.cols}">${S.images.map((it, i) => `
         <div class="card${S.pick === it.id ? " picked" : S.pick ? " target" : ""}" data-id="${it.id}" tabindex="0" role="button" aria-pressed="${S.pick === it.id}" aria-label="${i + 1}번 사진">
-          <div class="ph"><img alt="" src="/f/${it.id}" loading="lazy"></div>
+          <div class="ph"><img alt="" src="/f/${it.id}" loading="lazy">${qBadge(it.quality)}</div>
           <span class="num">${i + 1}</span>
           <button class="more" data-more="${it.id}" aria-label="${i + 1}번 사진 메뉴">⋯</button>
           <div class="fn">${esc(fileName(i))}</div>
@@ -234,6 +239,7 @@ function renderAlbum() {
 
   $("#back").onclick = backToLibrary;
   $("#copyShare").onclick = () => copy(location.origin + "/a/" + a.id, "공유 링크를 복사했습니다");
+  const ns = $("#nativeShare"); if (ns) ns.onclick = async () => { try { await navigator.share({ title: a.title, url: location.origin + "/a/" + a.id }); } catch {} };
   const ti = $("#titleIn");
   ti.onchange = async () => {
     const v = ti.value.trim(); if (!v || v === a.title) { ti.value = a.title; return; }
@@ -292,9 +298,9 @@ function openSheet(id) {
   const saved = it.ext === "webp" && it.orig_size > it.size ? ` <span class="muted">(원본 ${fmt(it.orig_size)}, ${Math.round((1 - it.size / it.orig_size) * 100)}% 절감)</span>` : "";
   sh.innerHTML = `<div class="wrap">
     <div class="grab"></div>
-    <div class="row" style="justify-content:space-between"><b class="mono">${esc(fileName(i))}</b><button class="iconbtn" id="shClose" aria-label="닫기">✕</button></div>
-    <div class="preview"><img alt="" src="/f/${it.id}"></div>
-    <div class="linkbox"><code>${esc(linkOf(i))}</code><button class="btn primary" id="shCopy">복사</button></div>
+    <div class="row shhead" style="justify-content:space-between"><b class="mono">${esc(fileName(i))}</b><button class="iconbtn" id="shClose" aria-label="닫기">✕</button></div>
+    <div class="preview"><img alt="" src="/f/${it.id}">${qBadge(it.quality, true)}</div>
+    <div class="linkbox"><code>${esc(linkOf(i))}</code><button class="btn primary" id="shCopy">복사</button>${canShare ? `<button class="btn" id="shShare">공유</button>` : ""}</div>
     <div class="stack" style="gap:8px"><h2>순서 이동 (현재 ${i + 1} / ${n})</h2>
       <div class="movegrid">
         <button class="btn" data-mv="first"${i === 0 ? " disabled" : ""}>⇤ 맨 앞</button>
@@ -307,6 +313,7 @@ function openSheet(id) {
     <dl class="facts">
       <dt>크기</dt><dd>${it.w || "?"}×${it.h || "?"}</dd>
       <dt>용량</dt><dd>${fmt(it.size)}${saved}</dd>
+      ${QN[it.quality] ? `<dt>화질</dt><dd>${QN[it.quality]}${it.quality === "orig" ? " (변환 없이 그대로)" : ""} · 확정됨, 바뀌지 않음</dd>` : ""}
       <dt>원래 이름</dt><dd>${esc(it.orig_name || "-")}</dd>
     </dl>
     <div class="row"><a class="btn" href="${esc(linkOf(i))}" download="${esc(fileName(i))}" style="flex:1;text-decoration:none">이 사진 저장</a><button class="btn danger" id="shDel" style="flex:1">삭제</button></div>
@@ -314,6 +321,7 @@ function openSheet(id) {
   document.body.append(scrim, sh);
   $("#shClose").onclick = closeSheet;
   $("#shCopy").onclick = () => copy(linkOf(i), "링크를 복사했습니다");
+  const shs = $("#shShare"); if (shs) shs.onclick = async () => { try { await navigator.share({ title: fileName(i), url: linkOf(i) }); } catch {} };
   const go = async to => { to = Math.max(0, Math.min(n - 1, to)); closeSheet(); await moveImage(i, to, `${to + 1}번으로 이동했습니다`); openSheet(id); };
   sh.querySelectorAll("[data-mv]").forEach(b => b.onclick = () => { const v = b.dataset.mv; go(v === "first" ? 0 : v === "last" ? n - 1 : i + +v); });
   $("#gotoForm").onsubmit = e => { e.preventDefault(); const v = parseInt($("#gotoN").value, 10); if (!v || v < 1 || v > n) { toast(`1부터 ${n} 사이 번호를 입력하세요`); return; } go(v - 1); };
@@ -345,7 +353,7 @@ async function uploadFiles(files) {
       const fd = new FormData();
       const ext = { "image/webp": "webp", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif" }[r.blob.type] || "bin";
       fd.append("file", r.blob, "upload." + ext);
-      fd.append("w", r.w); fd.append("h", r.h); fd.append("origName", r.origName); fd.append("origSize", r.origSize);
+      fd.append("w", r.w); fd.append("h", r.h); fd.append("origName", r.origName); fd.append("origSize", r.origSize); fd.append("quality", r.q || "");
       const res = await api(`/api/albums/${albumId}/images`, { method: "POST", form: fd });
       if (S.album?.id === albumId) S.images.push(res.image);
       ok++;

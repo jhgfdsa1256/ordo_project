@@ -64,6 +64,22 @@ for (let n = 0; n < 3; n++) {
 }
 // 잘못된 형식 거부
 { const fd = new FormData(); fd.append("file", new File(["x"], "a.txt", { type: "text/plain" })); assert.equal((await call("POST", `/api/albums/${al.id}/images`, fd)).status, 415); }
+// 화질 확정 표시: 올릴 때 정한 화질이 사진마다 저장되고, 이상한 값은 비어 있게 저장되며, 공유 페이지에 문구가 나온다
+{
+  const qa = (await j(await call("POST", "/api/albums", { title: "화질앨범" }))).body.album;
+  const up = async q => { const fd = new FormData(); fd.append("file", png(9)); fd.append("w", "10"); fd.append("h", "20"); if (q !== undefined) fd.append("quality", q); const rr = await j(await call("POST", `/api/albums/${qa.id}/images`, fd)); assert.equal(rr.status, 201, JSON.stringify(rr.body)); return rr.body.image; };
+  assert.equal((await up("lossless")).quality, "lossless");
+  assert.equal((await up("high")).quality, "high");
+  assert.equal((await up("orig")).quality, "orig");
+  assert.equal((await up("zzz")).quality, null);
+  assert.equal((await up()).quality, null);
+  const got = (await j(await call("GET", `/api/albums/${qa.id}`))).body.images.map(x => x.quality);
+  assert.deepEqual(got, ["lossless", "high", "orig", null, null]);
+  const html = await (await call("GET", `/a/${qa.id}`)).text();
+  assert.ok(html.includes("무손실 · 화질 확정") && html.includes("고화질 · 화질 확정") && html.includes("원본 · 화질 확정"));
+  assert.equal((html.match(/class="qbadge"/g) || []).length, 3, "값이 없는 사진에는 문구를 달지 않는다");
+  await call("DELETE", `/api/albums/${qa.id}`);
+}
 // 같은 제목(대소문자·띄어쓰기만 다른 것 포함)은 거부
 assert.equal((await call("POST", "/api/albums", { title: "aa  테스트" })).status, 409);
 assert.equal((await j(await call("GET", "/api/title-check?title=" + encodeURIComponent("AA 테스트")))).body.available, false);

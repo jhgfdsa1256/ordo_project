@@ -15,6 +15,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, album_id TEXT, user_id TEXT, pos INTEGER, ext TEXT, mime TEXT, size INTEGER, w INTEGER, h INTEGER, orig_name TEXT, orig_size INTEGER, created INTEGER)`,
   `CREATE INDEX IF NOT EXISTS images_album ON images(album_id, pos)`,
   `CREATE INDEX IF NOT EXISTS images_user ON images(user_id)`,
+  `CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, created INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS folders_user ON folders(user_id)`,
   `CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, album_id TEXT, reason TEXT, detail TEXT, created INTEGER, resolved INTEGER DEFAULT 0)`,
 ];
 
@@ -26,6 +28,10 @@ let schemaReady = false;
 async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s)));
+  // 폴더 기능 전에 만든 사이트를 위한 보강: albums 에 folder_id 칸이 없으면 추가
+  const cols = await env.DB.prepare(`PRAGMA table_info(albums)`).all();
+  if (!(cols.results || []).some(c => c.name === "folder_id")) await env.DB.prepare(`ALTER TABLE albums ADD COLUMN folder_id TEXT`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS albums_folder ON albums(folder_id)`).run();
   schemaReady = true;
 }
 
@@ -102,6 +108,11 @@ async function usedBytes(env, userId) {
 async function ownAlbum(env, user, id) {
   return await env.DB.prepare(`SELECT * FROM albums WHERE id = ? AND user_id = ?`).bind(id, user.id).first();
 }
+// 내 폴더인지 확인 (없으면 null)
+async function ownFolder(env, user, id) {
+  return id ? await env.DB.prepare(`SELECT * FROM folders WHERE id = ? AND user_id = ?`).bind(String(id), user.id).first() : null;
+}
+const folderName = v => String(v || "").trim().replace(/\s+/g, " ").slice(0, 40);
 async function albumImages(env, albumId) {
   const r = await env.DB.prepare(`SELECT id, ext, size, w, h, orig_name, orig_size FROM images WHERE album_id = ? ORDER BY pos, created`).bind(albumId).all();
   return r.results || [];
@@ -153,10 +164,11 @@ async function api(req, env, url) {
   }
   if (!user) return err(401, "로그인이 필요합니다.");
 
+  let mm;
   /* albums */
   if (p === "/api/albums" && m === "GET") {
     const r = await env.DB.prepare(
-      `SELECT a.id, a.title, a.updated, a.hidden, COUNT(i.id) AS count, COALESCE(SUM(i.size),0) AS size
+      `SELECT a.id, a.title, a.updated, a.hidden, a.folder_id, COUNT(i.id) AS count, COALESCE(SUM(i.size),0) AS size
        FROM albums a LEFT JOIN images i ON i.album_id = a.id WHERE a.user_id = ? GROUP BY a.id ORDER BY a.updated DESC`
     ).bind(user.id).all();
     const albums = r.results || [];
@@ -164,17 +176,61 @@ async function api(req, env, url) {
       const c = await env.DB.prepare(`SELECT id FROM images WHERE album_id = ? ORDER BY pos, created LIMIT 4`).bind(a.id).all();
       a.covers = (c.results || []).map(x => x.id);
     }
-    return json({ albums });
+    const fr = await env.DB.prepare(
+      `SELECT f.id, f.name, COUNT(a.id) AS count FROM folders f LEFT JOIN albums a ON a.folder_id = f.id WHERE f.user_id = ? GROUP BY f.id ORDER BY f.name COLLATE NOCASE`
+    ).bind(user.id).all();
+    const folders = fr.results || [];
+    for (const f of folders) {
+      const c = await env.DB.prepare(
+        `SELECT i.id FROM images i JOIN albums a ON a.id = i.album_id WHERE a.folder_id = ? ORDER BY a.updated DESC, i.pos LIMIT 4`
+      ).bind(f.id).all();
+      f.covers = (c.results || []).map(x => x.id);
+    }
+    return json({ albums, folders });
+  }
+  if (p === "/api/folders" && m === "POST") {
+    const body = await req.json().catch(() => ({}));
+    const name = folderName(body.name);
+    if (!name) return err(400, "폴더 이름을 입력하세요.");
+    const all = (await env.DB.prepare(`SELECT name FROM folders WHERE user_id = ?`).bind(user.id).all()).results || [];
+    if (all.length >= 50) return err(409, "폴더는 50개까지 만들 수 있습니다.");
+    if (all.some(f => f.name.toLowerCase() === name.toLowerCase())) return err(409, `"${name}" 폴더가 이미 있습니다.`);
+    const id = rid(8);
+    await env.DB.prepare(`INSERT INTO folders (id, user_id, name, created) VALUES (?, ?, ?, ?)`).bind(id, user.id, name, now()).run();
+    return json({ folder: { id, name } }, 201);
+  }
+  if ((mm = p.match(/^\/api\/folders\/([a-z0-9]+)$/))) {
+    const folder = await ownFolder(env, user, mm[1]);
+    if (!folder) return err(404, "폴더를 찾을 수 없습니다.");
+    if (m === "PATCH") {
+      const body = await req.json().catch(() => ({}));
+      const name = folderName(body.name);
+      if (!name) return err(400, "폴더 이름을 입력하세요.");
+      const all = (await env.DB.prepare(`SELECT id, name FROM folders WHERE user_id = ?`).bind(user.id).all()).results || [];
+      if (all.some(f => f.id !== folder.id && f.name.toLowerCase() === name.toLowerCase())) return err(409, `"${name}" 폴더가 이미 있습니다.`);
+      await env.DB.prepare(`UPDATE folders SET name = ? WHERE id = ?`).bind(name, folder.id).run();
+      return json({ ok: true, name });
+    }
+    if (m === "DELETE") {
+      // 폴더만 지우고, 안의 앨범은 '폴더 없음'으로 돌아갑니다 (앨범·사진·링크는 그대로)
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE albums SET folder_id = NULL WHERE folder_id = ? AND user_id = ?`).bind(folder.id, user.id),
+        env.DB.prepare(`DELETE FROM folders WHERE id = ?`).bind(folder.id),
+      ]);
+      return json({ ok: true });
+    }
   }
   if (p === "/api/albums" && m === "POST") {
     const body = await req.json().catch(() => ({}));
     const title = String(body.title || "").trim().slice(0, 60);
     if (!title) return err(400, "앨범 제목을 입력하세요.");
     const id = rid(8), t = now(), slug = slugOf(title);
+    const folder = body.folderId ? await ownFolder(env, user, body.folderId) : null;
+    if (body.folderId && !folder) return err(404, "폴더를 찾을 수 없습니다.");
     if (await env.DB.prepare(`SELECT id FROM albums WHERE slug = ?`).bind(slug).first()) return err(409, dupMsg(title));
-    try { await env.DB.prepare(`INSERT INTO albums (id, user_id, title, slug, created, updated) VALUES (?, ?, ?, ?, ?, ?)`).bind(id, user.id, title, slug, t, t).run(); }
+    try { await env.DB.prepare(`INSERT INTO albums (id, user_id, title, slug, created, updated, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(id, user.id, title, slug, t, t, folder ? folder.id : null).run(); }
     catch (e) { if (isUniqueErr(e)) return err(409, dupMsg(title)); throw e; }
-    return json({ album: { id, title } }, 201);
+    return json({ album: { id, title, folderId: folder ? folder.id : null } }, 201);
   }
 
   if (p === "/api/title-check" && m === "GET") {
@@ -183,13 +239,19 @@ async function api(req, env, url) {
     return json({ name: safeTitle(t), available: !row });
   }
 
-  let mm;
   if ((mm = p.match(/^\/api\/albums\/([a-z0-9]+)$/))) {
     const album = await ownAlbum(env, user, mm[1]);
     if (!album) return err(404, "앨범을 찾을 수 없습니다.");
-    if (m === "GET") return json({ album: { id: album.id, title: album.title, hidden: !!album.hidden }, images: await albumImages(env, album.id) });
+    if (m === "GET") return json({ album: { id: album.id, title: album.title, hidden: !!album.hidden, folderId: album.folder_id || null }, images: await albumImages(env, album.id) });
     if (m === "PATCH") {
       const body = await req.json().catch(() => ({}));
+      if (!("title" in body) && "folderId" in body) {
+        // 폴더만 옮기기 (링크·제목은 그대로)
+        const folder = body.folderId ? await ownFolder(env, user, body.folderId) : null;
+        if (body.folderId && !folder) return err(404, "폴더를 찾을 수 없습니다.");
+        await env.DB.prepare(`UPDATE albums SET folder_id = ? WHERE id = ?`).bind(folder ? folder.id : null, album.id).run();
+        return json({ ok: true, folderId: folder ? folder.id : null });
+      }
       const title = String(body.title || "").trim().slice(0, 60);
       if (!title) return err(400, "앨범 제목을 입력하세요.");
       const slug = slugOf(title);

@@ -7,7 +7,7 @@ const fmt = n => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " K
 const safeTitle = t => { const s = String(t || "").trim().replace(/[\\/:*?"<>|#%&+\s]+/g, "_").replace(/^[._]+|[._]+$/g, "").slice(0, 60); return s || "untitled"; };
 const ls = { get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
-const S = { me: null, usage: null, maxFile: 20 * 1048576, site: "Ordo", view: "library", albums: [], album: null, images: [], cols: ls.get("ordo.cols", 2), quality: ls.get("ordo.q", "high"), pick: null, busy: null, sheet: null, reports: [] };
+const S = { me: null, usage: null, maxFile: 20 * 1048576, site: "Ordo", view: "library", albums: [], album: null, images: [], cols: ls.get("ordo.cols", innerWidth < 600 ? 2 : innerWidth < 1000 ? 3 : 4), folders: [], folder: null, quality: ls.get("ordo.q", "high"), pick: null, busy: null, sheet: null, reports: [] };
 const app = $("#app");
 
 /* ---------- api ---------- */
@@ -100,31 +100,71 @@ function renderLogin() {
 
 /* ---------- 보관함 ---------- */
 async function loadLibrary() {
-  try { const [me, al] = await Promise.all([api("/api/me"), api("/api/albums")]); S.usage = me.usage; S.albums = al.albums; } catch (e) { fail(e); }
+  try { const [me, al] = await Promise.all([api("/api/me"), api("/api/albums")]); S.usage = me.usage; S.albums = al.albums; S.folders = al.folders || []; } catch (e) { fail(e); }
+}
+const coverHtml = covers => (covers.length >= 4 ? covers : covers.slice(0, 1)).map(id => `<img alt="" src="/f/${id}" loading="lazy">`).join("");
+function albumCard(a) {
+  return `<div class="albumwrap"><button class="album" data-id="${a.id}">
+        <div class="cover">${coverHtml(a.covers)}</div>
+        <div class="meta"><b>${esc(a.title)}</b><span class="muted">${a.count}장 · ${fmt(a.size)}${a.hidden ? " · 숨김 처리됨" : ""}</span></div>
+      </button><button class="albumdel" data-del="${a.id}" aria-label="${esc(a.title)} 앨범 삭제">삭제</button></div>`;
 }
 function renderLibrary() {
   const tot = S.usage?.total || 0, totLimit = S.usage?.totalLimit || 0; // 서버 전체 사용량
+  let cur = S.folder ? S.folders.find(f => f.id === S.folder) : null;
+  if (S.folder && !cur) S.folder = null;
+  const albums = S.albums.filter(a => (a.folder_id || null) === (cur ? cur.id : null));
   app.innerHTML = header(`${logo()}<div class="spacer"></div>
-      ${S.me.isAdmin ? `<button class="btn" id="adminBtn">신고 관리</button>` : ""}
-      <button class="btn" id="logout">로그아웃</button>`) +
+      ${S.me.isAdmin ? `<button class="btn sm" id="adminBtn">신고 관리</button>` : ""}
+      <button class="btn sm" id="logout">로그아웃</button>`) +
   `<main class="wrap stack">
     <div class="usage"><div class="row" style="justify-content:space-between"><h2>${esc(S.me.name)}님의 보관함</h2><span class="mono muted" style="font-size:12px">서버 전체 ${totLimit ? `${fmt(tot)} / ${fmt(totLimit)}` : `${fmt(tot)} 사용 중`}</span></div>
       ${totLimit ? `<div class="bar"><span style="width:${Math.min(100, tot / totLimit * 100).toFixed(2)}%"></span></div>` : ""}</div>
-    <div class="stack" style="gap:6px"><form class="newalbum" id="newForm"><input id="newTitle" placeholder="새 앨범 제목 (예: AA)" maxlength="60" autocomplete="off" aria-describedby="titleHint"><button class="btn primary" type="submit">앨범 만들기</button></form>
-    <span class="hint" id="titleHint">제목은 사이트 전체에서 하나만 쓸 수 있습니다. 링크는 <span class="mono">${esc(location.host)}/제목_1.webp</span> 형식이 됩니다.</span></div>
-    ${S.albums.length ? `<div class="albums">${S.albums.map(a => `
-      <div class="albumwrap"><button class="album" data-id="${a.id}">
-        <div class="cover">${(a.covers.length >= 4 ? a.covers : a.covers.slice(0, 1)).map(id => `<img alt="" src="/f/${id}" loading="lazy">`).join("")}</div>
-        <div class="meta"><b>${esc(a.title)}</b><span class="muted">${a.count}장 · ${fmt(a.size)}${a.hidden ? " · 숨김 처리됨" : ""}</span></div>
-      </button><button class="albumdel" data-del="${a.id}" aria-label="${esc(a.title)} 앨범 삭제">삭제</button></div>`).join("")}</div>` : `<div class="empty">아직 앨범이 없습니다. 위에서 제목을 정하고 첫 앨범을 만드세요.</div>`}
+    ${cur ? `<nav class="crumbs" aria-label="현재 위치"><button class="crumb" id="toRoot">보관함</button><span class="muted" aria-hidden="true">/</span>
+        <input class="titleinput foldername" id="folderName" value="${esc(cur.name)}" maxlength="40" aria-label="폴더 이름">
+        <button class="btn sm danger" id="delFolder">폴더 삭제</button></nav>
+      <p class="hint" style="margin:0">폴더는 앨범을 묶어서 보기 위한 것입니다. 폴더를 옮기거나 지워도 사진 링크는 바뀌지 않습니다.</p>` : ""}
+    <div class="createrow">
+      <div class="stack" style="gap:6px;flex:1;min-width:0"><form class="newalbum" id="newForm"><input id="newTitle" placeholder="${cur ? `'${esc(cur.name)}' 폴더에 새 앨범 제목` : "새 앨범 제목 (예: AA)"}" maxlength="60" autocomplete="off" aria-describedby="titleHint"><button class="btn primary" type="submit">앨범 만들기</button></form>
+      <span class="hint" id="titleHint">제목은 사이트 전체에서 하나만 쓸 수 있습니다. 링크는 <span class="mono">${esc(location.host)}/제목_1.webp</span> 형식이 됩니다.</span></div>
+      ${cur ? "" : `<details class="newfolder"><summary class="btn">＋ 새 폴더</summary>
+        <form class="newalbum" id="folderForm"><input id="newFolder" placeholder="폴더 이름 (예: 캐릭터)" maxlength="40" autocomplete="off"><button class="btn primary" type="submit">만들기</button></form></details>`}
+    </div>
+    ${!cur && S.folders.length ? `<h2>폴더</h2><div class="albums folders">${S.folders.map(f => `
+      <button class="album folder" data-folder="${f.id}">
+        <div class="cover${f.covers.length ? "" : " empty"}">${f.covers.length ? coverHtml(f.covers) : "<span>비어 있음</span>"}</div>
+        <div class="meta"><b><span class="chip">폴더</span> ${esc(f.name)}</b><span class="muted">앨범 ${f.count}개</span></div>
+      </button>`).join("")}</div>` : ""}
+    ${albums.length ? `${!cur && S.folders.length ? "<h2>폴더에 없는 앨범</h2>" : ""}<div class="albums">${albums.map(albumCard).join("")}</div>`
+      : cur ? `<div class="empty">이 폴더는 비어 있습니다. 위에서 앨범을 만들거나, 앨범 화면의 <b>폴더</b> 선택에서 이 폴더로 옮기세요.</div>`
+      : S.folders.length ? "" : `<div class="empty">아직 앨범이 없습니다. 위에서 제목을 정하고 첫 앨범을 만드세요.</div>`}
   </main>`;
-  $("#logout").onclick = async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => {}); S.me = null; render(); };
+  $("#logout").onclick = async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => {}); S.me = null; S.folder = null; render(); };
   const ab = $("#adminBtn"); if (ab) ab.onclick = () => openAdmin();
   $("#newForm").onsubmit = async e => {
     e.preventDefault(); const t = $("#newTitle").value.trim(); if (!t) { $("#newTitle").focus(); toast("앨범 제목을 입력하세요"); return; }
-    try { const r = await api("/api/albums", { method: "POST", json: { title: t } }); await openAlbum(r.album.id); } catch (er) { fail(er); }
+    try { const r = await api("/api/albums", { method: "POST", json: { title: t, folderId: cur ? cur.id : undefined } }); await openAlbum(r.album.id); } catch (er) { fail(er); }
   };
-  app.querySelectorAll(".album").forEach(b => b.onclick = () => openAlbum(b.dataset.id));
+  const ff = $("#folderForm");
+  if (ff) ff.onsubmit = async e => {
+    e.preventDefault(); const n = $("#newFolder").value.trim(); if (!n) { $("#newFolder").focus(); toast("폴더 이름을 입력하세요"); return; }
+    try { const r = await api("/api/folders", { method: "POST", json: { name: n } }); S.folder = r.folder.id; await loadLibrary(); renderLibrary(); toast("폴더를 만들었습니다"); } catch (er) { fail(er); }
+  };
+  app.querySelectorAll("[data-folder]").forEach(b => b.onclick = () => { S.folder = b.dataset.folder; renderLibrary(); window.scrollTo(0, 0); });
+  if (cur) {
+    $("#toRoot").onclick = () => { S.folder = null; renderLibrary(); window.scrollTo(0, 0); };
+    const fn = $("#folderName");
+    fn.onchange = async () => {
+      const v = fn.value.trim(); if (!v || v === cur.name) { fn.value = cur.name; return; }
+      try { await api("/api/folders/" + cur.id, { method: "PATCH", json: { name: v } }); cur.name = v; toast("폴더 이름을 바꿨습니다"); renderLibrary(); } catch (er) { fn.value = cur.name; fail(er); }
+    };
+    const df = $("#delFolder");
+    df.onclick = async () => {
+      if (!df.classList.contains("armed")) { df.classList.add("armed"); df.textContent = "앨범은 남습니다. 한 번 더"; return; }
+      try { await api("/api/folders/" + cur.id, { method: "DELETE" }); S.folder = null; await loadLibrary(); renderLibrary(); toast("폴더를 지웠습니다. 앨범은 '폴더에 없는 앨범'으로 돌아갔습니다"); } catch (er) { fail(er); }
+    };
+  }
+  app.querySelectorAll(".album[data-id]").forEach(b => b.onclick = () => openAlbum(b.dataset.id));
   app.querySelectorAll(".albumdel").forEach(b => b.onclick = async e => {
     e.stopPropagation();
     if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "한 번 더"; setTimeout(() => { b.classList.remove("armed"); b.textContent = "삭제"; }, 3000); return; }
@@ -156,7 +196,7 @@ async function openAlbum(id) {
   try { const r = await api("/api/albums/" + id); S.album = r.album; S.images = r.images; S.pick = null; S.view = "album"; render(); window.scrollTo(0, 0); }
   catch (e) { fail(e); }
 }
-async function backToLibrary() { S.view = "library"; S.album = null; S.pick = null; await loadLibrary(); render(); }
+async function backToLibrary() { S.view = "library"; if (S.album) S.folder = S.album.folderId || null; S.album = null; S.pick = null; await loadLibrary(); render(); }
 
 function renderAlbum() {
   const a = S.album, n = S.images.length;
@@ -172,6 +212,8 @@ function renderAlbum() {
       <div class="seg" role="group" aria-label="열 개수">${[1, 2, 3, 4, 5].map(k => `<button data-cols="${k}" aria-pressed="${S.cols === k}">${k}</button>`).join("")}</div>
       <span class="lbl" style="margin-left:6px">화질</span>
       <select class="sel" id="quality"><option value="high"${S.quality === "high" ? " selected" : ""}>고화질 (90)</option><option value="lossless"${S.quality === "lossless" ? " selected" : ""}>무손실</option></select>
+      <span class="lbl" style="margin-left:6px">폴더</span>
+      <select class="sel" id="folderSel" aria-label="앨범을 넣을 폴더"><option value="">폴더 없음</option>${S.folders.map(f => `<option value="${f.id}"${a.folderId === f.id ? " selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
     </div>
     ${n ? `<p class="hint" style="margin:0">사진을 누르고, 옮기고 싶은 자리의 사진을 누르면 그 자리로 이동합니다. ⋯ 버튼은 링크 복사·저장·삭제.</p>
       <div class="grid" id="grid" data-cols="${S.cols}" style="--cols:${S.cols}">${S.images.map((it, i) => `
@@ -200,6 +242,11 @@ function renderAlbum() {
   };
   app.querySelectorAll("[data-cols]").forEach(b => b.onclick = () => { S.cols = +b.dataset.cols; ls.set("ordo.cols", S.cols); renderAlbum(); });
   $("#quality").onchange = e => { S.quality = e.target.value; ls.set("ordo.q", S.quality); };
+  $("#folderSel").onchange = async e => {
+    const v = e.target.value || null;
+    try { await api("/api/albums/" + a.id, { method: "PATCH", json: { folderId: v } }); a.folderId = v; toast(v ? "폴더로 옮겼습니다. 사진 링크는 그대로입니다" : "폴더에서 뺐습니다. 사진 링크는 그대로입니다"); }
+    catch (er) { e.target.value = a.folderId || ""; fail(er); }
+  };
   $("#addBtn").onclick = () => $("#fileInput").click();
   $("#zipBtn").onclick = zipAlbum;
   const pc = $("#pickCancel"); if (pc) pc.onclick = () => { S.pick = null; renderAlbum(); };
@@ -279,9 +326,15 @@ function openSheet(id) {
 }
 
 /* ---------- 업로드 ---------- */
-$("#fileInput").onchange = async e => {
-  const files = [...e.target.files]; e.target.value = "";
-  if (!files.length || !S.album) return;
+$("#fileInput").onchange = e => { const files = [...e.target.files]; e.target.value = ""; uploadFiles(files); };
+// 컴퓨터에서는 사진을 화면으로 끌어다 놓아도 올라갑니다
+["dragover", "drop"].forEach(t => window.addEventListener(t, e => {
+  if (S.view !== "album" || !S.album || !e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+  e.preventDefault();
+  if (t === "drop") uploadFiles([...e.dataTransfer.files].filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type)));
+}));
+async function uploadFiles(files) {
+  if (!files.length || !S.album || S.busy) return;
   const albumId = S.album.id; let ok = 0, fallback = 0;
   for (let k = 0; k < files.length; k++) {
     S.busy = `올리는 중 ${k + 1} / ${files.length}`; if (S.album?.id === albumId) renderAlbum();
@@ -300,7 +353,7 @@ $("#fileInput").onchange = async e => {
   }
   S.busy = null; if (S.album?.id === albumId) renderAlbum();
   if (ok) toast(fallback ? `${ok}장 올림. ${fallback}장은 WebP 변환이 안 돼 원래 형식으로 올렸습니다` : `${ok}장을 WebP로 올렸습니다`);
-};
+}
 
 /* ---------- ZIP ---------- */
 async function zipAlbum() {

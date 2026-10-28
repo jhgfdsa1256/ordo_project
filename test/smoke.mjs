@@ -123,6 +123,31 @@ assert.equal(store.size, 0);
   const r = await handle(new Request(O + `/api/albums/${a2.id}/images`, { method: "POST", headers: { cookie: jar, origin: O }, body: fd }), { ...env, USER_QUOTA_MB: undefined });
   assert.equal(r.status, 201, "한도 없음이면 1MB 넘는 사진도 올라감");
 }
+// 폴더: 만들기 · 중복 거부 · 앨범 넣기/빼기 · 폴더 지워도 앨범 유지 · 남의 폴더 거부
+{
+  const f1 = (await j(await call("POST", "/api/folders", { name: "  캐릭터  " }))).body.folder; assert.equal(f1.name, "캐릭터");
+  assert.equal((await call("POST", "/api/folders", { name: "캐릭터" })).status, 409);
+  assert.equal((await call("POST", "/api/folders", { name: "" })).status, 400);
+  const fa = (await j(await call("POST", "/api/albums", { title: "폴더앨범", folderId: f1.id }))).body.album; assert.equal(fa.folderId, f1.id);
+  assert.equal((await call("POST", "/api/albums", { title: "없는폴더", folderId: "nope" })).status, 404);
+  let lib2 = (await j(await call("GET", "/api/albums"))).body;
+  assert.equal(lib2.folders.find(x => x.id === f1.id).count, 1);
+  assert.equal(lib2.albums.find(x => x.id === fa.id).folder_id, f1.id);
+  const f2 = (await j(await call("POST", "/api/folders", { name: "배경" }))).body.folder;
+  assert.equal((await call("PATCH", `/api/folders/${f2.id}`, { name: "캐릭터" })).status, 409);
+  assert.equal((await call("PATCH", `/api/folders/${f2.id}`, { name: "풍경" })).status, 200);
+  assert.equal((await call("PATCH", `/api/albums/${fa.id}`, { folderId: f2.id })).status, 200);
+  assert.equal((await j(await call("GET", `/api/albums/${fa.id}`))).body.album.folderId, f2.id);
+  assert.equal((await call("PATCH", `/api/albums/${fa.id}`, { folderId: "nope" })).status, 404);
+  // 폴더를 옮겨도 사진 링크(제목 기준)는 그대로
+  assert.equal((await call("GET", "/api/me")).status, 200);
+  assert.equal((await call("DELETE", `/api/folders/${f2.id}`)).status, 200);
+  lib2 = (await j(await call("GET", "/api/albums"))).body;
+  assert.equal(lib2.albums.find(x => x.id === fa.id).folder_id, null, "폴더를 지우면 앨범은 폴더 없음으로");
+  assert.equal(lib2.folders.some(x => x.id === f2.id), false);
+  assert.equal((await call("PATCH", `/api/folders/${f1.id}`, { name: "x" })).status, 200);
+  await call("DELETE", `/api/albums/${fa.id}`); await call("DELETE", `/api/folders/${f1.id}`);
+}
 // 로그아웃
 await call("POST", "/api/auth/logout"); jar = "";
 assert.equal((await j(await call("GET", "/api/me"))).body.user, null);

@@ -23,6 +23,8 @@ const SCHEMA = [
 const ALLOWED = { "image/webp": "webp", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif" };
 const REASONS = ["불법 촬영물·성적 착취물", "저작권 침해", "개인정보 노출", "기타"];
 const SESSION_DAYS = 30;
+// 사진 파일이 저장된 위치. 새 사진은 skey(img/앨범ID/사진ID), 옛 사진은 img/사진ID
+const imgKey = img => img.skey || "img/" + img.id;
 const QUALITY_LABEL = { high: "고화질 · 화질 확정", lossless: "무손실 · 화질 확정", orig: "원본 · 화질 확정" };
 
 let schemaReady = false;
@@ -36,6 +38,8 @@ async function ensureSchema(env) {
   // 화질 확정 표시 기능 전에 올린 사진을 위한 보강: images 에 quality 칸이 없으면 추가 (옛 사진은 비어 있음)
   const icols = await env.DB.prepare(`PRAGMA table_info(images)`).all();
   if (!(icols.results || []).some(c => c.name === "quality")) await env.DB.prepare(`ALTER TABLE images ADD COLUMN quality TEXT`).run();
+  // 저장 경로 칸: 새 사진은 img/앨범ID/사진ID 로 저장. 칸이 비어 있는 옛 사진은 예전 경로 img/사진ID 를 계속 쓴다
+  if (!(icols.results || []).some(c => c.name === "skey")) await env.DB.prepare(`ALTER TABLE images ADD COLUMN skey TEXT`).run();
   schemaReady = true;
 }
 
@@ -118,7 +122,7 @@ async function ownFolder(env, user, id) {
 }
 const folderName = v => String(v || "").trim().replace(/\s+/g, " ").slice(0, 40);
 async function albumImages(env, albumId) {
-  const r = await env.DB.prepare(`SELECT id, ext, size, w, h, orig_name, orig_size, quality FROM images WHERE album_id = ? ORDER BY pos, created`).bind(albumId).all();
+  const r = await env.DB.prepare(`SELECT id, ext, size, w, h, orig_name, orig_size, quality, skey FROM images WHERE album_id = ? ORDER BY pos, created`).bind(albumId).all();
   return r.results || [];
 }
 const publicLink = (origin, album, i, img) => `${origin}/${encodeURIComponent(safeTitle(album.title))}_${i + 1}.${img.ext}`;
@@ -266,7 +270,7 @@ async function api(req, env, url) {
     }
     if (m === "DELETE") {
       const imgs = await albumImages(env, album.id);
-      for (let i = 0; i < imgs.length; i += 900) await env.STORE.delete(imgs.slice(i, i + 900).map(x => "img/" + x.id));
+      for (let i = 0; i < imgs.length; i += 900) await env.STORE.delete(imgs.slice(i, i + 900).map(imgKey));
       await env.DB.batch([
         env.DB.prepare(`DELETE FROM images WHERE album_id = ?`).bind(album.id),
         env.DB.prepare(`DELETE FROM albums WHERE id = ?`).bind(album.id),
@@ -289,9 +293,9 @@ async function api(req, env, url) {
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/images\/([a-z0-9]+)$/)) && m === "DELETE") {
-    const img = await env.DB.prepare(`SELECT id, album_id FROM images WHERE id = ? AND user_id = ?`).bind(mm[1], user.id).first();
+    const img = await env.DB.prepare(`SELECT id, album_id, skey FROM images WHERE id = ? AND user_id = ?`).bind(mm[1], user.id).first();
     if (!img) return err(404, "사진을 찾을 수 없습니다.");
-    await env.STORE.delete("img/" + img.id);
+    await env.STORE.delete(imgKey(img));
     await env.DB.batch([
       env.DB.prepare(`DELETE FROM images WHERE id = ?`).bind(img.id),
       env.DB.prepare(`UPDATE albums SET updated = ? WHERE id = ?`).bind(now(), img.album_id),
@@ -385,7 +389,8 @@ async function upload(req, env, user, albumId) {
   if (Number(tot.s) + file.size > L.total) return err(507, "서비스 전체 저장 공간이 가득 찼습니다. 관리자에게 알려주세요.");
 
   const id = rid(16);
-  await env.STORE.put("img/" + id, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+  const skey = `img/${album.id}/${id}`;
+  await env.STORE.put(skey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
   const max = await env.DB.prepare(`SELECT COALESCE(MAX(pos),0) AS m FROM images WHERE album_id = ?`).bind(album.id).first();
   const w = parseInt(form.get("w"), 10) || 0, h = parseInt(form.get("h"), 10) || 0;
   const origName = String(form.get("origName") || file.name || "").slice(0, 200);
@@ -393,8 +398,8 @@ async function upload(req, env, user, albumId) {
   // 올릴 때 고른 화질. 한 번 정해지면 바뀌지 않는다(사진을 다시 압축하는 기능이 없음). high=고화질, lossless=무손실, orig=원본 그대로
   const q = String(form.get("quality") || ""), quality = ["high", "lossless", "orig"].includes(q) ? q : null;
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO images (id, album_id, user_id, pos, ext, mime, size, w, h, orig_name, orig_size, created, quality) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, album.id, user.id, Number(max.m) + 1, ext, file.type, file.size, w, h, origName, origSize, now(), quality),
+    env.DB.prepare(`INSERT INTO images (id, album_id, user_id, pos, ext, mime, size, w, h, orig_name, orig_size, created, quality, skey) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, album.id, user.id, Number(max.m) + 1, ext, file.type, file.size, w, h, origName, origSize, now(), quality, skey),
     env.DB.prepare(`UPDATE albums SET updated = ? WHERE id = ?`).bind(now(), album.id),
   ]);
   return json({ image: { id, ext, size: file.size, w, h, orig_name: origName, orig_size: origSize, quality } }, 201);
@@ -420,17 +425,17 @@ async function serveByName(req, env, path) {
   const album = await env.DB.prepare(`SELECT id, title, hidden FROM albums WHERE slug = ?`).bind(base.toLowerCase()).first();
   if (!album || album.hidden) return notFound();
   const n = parseInt(m[2], 10); if (n < 1) return notFound();
-  const img = await env.DB.prepare(`SELECT id, ext, mime FROM images WHERE album_id = ? ORDER BY pos, created LIMIT 1 OFFSET ?`).bind(album.id, n - 1).first();
+  const img = await env.DB.prepare(`SELECT id, ext, mime, skey FROM images WHERE album_id = ? ORDER BY pos, created LIMIT 1 OFFSET ?`).bind(album.id, n - 1).first();
   if (!img || img.ext !== m[3].toLowerCase()) return notFound();
-  const obj = await env.STORE.get("img/" + img.id); if (!obj) return notFound();
+  const obj = await env.STORE.get(imgKey(img)); if (!obj) return notFound();
   // 순서를 바꾸면 같은 주소가 다른 사진을 가리키므로 캐시는 짧게 둡니다.
   return sendObject(req, obj, img.mime, `public, max-age=${limits(env).cache}`, `${safeTitle(album.title)}_${n}.${img.ext}`);
 }
 async function serveById(req, env, path) {
   const m = path.match(/^\/f\/([a-z0-9]+)$/); if (!m) return notFound();
-  const img = await env.DB.prepare(`SELECT i.id, i.mime, a.hidden FROM images i JOIN albums a ON a.id = i.album_id WHERE i.id = ?`).bind(m[1]).first();
+  const img = await env.DB.prepare(`SELECT i.id, i.mime, i.skey, a.hidden FROM images i JOIN albums a ON a.id = i.album_id WHERE i.id = ?`).bind(m[1]).first();
   if (!img || img.hidden) return notFound();
-  const obj = await env.STORE.get("img/" + img.id); if (!obj) return notFound();
+  const obj = await env.STORE.get(imgKey(img)); if (!obj) return notFound();
   return sendObject(req, obj, img.mime, "public, max-age=31536000, immutable");
 }
 
